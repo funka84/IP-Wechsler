@@ -1,14 +1,61 @@
 ﻿# ============================================================
 #  KONFIGURATION
 # ============================================================
-$script:Presets = @(
+$script:DefaultPresets = @(
     @{ Name="Buero";    IP="192.168.0.250";   Mask="255.255.255.0"; GW="192.168.0.1";   DNS="192.168.0.1"   },
     @{ Name="Heimnetz"; IP="192.168.178.250"; Mask="255.255.255.0"; GW="192.168.178.1"; DNS="192.168.178.1" },
     @{ Name="Labor";    IP="10.0.0.250";      Mask="255.255.255.0"; GW="10.0.0.1";      DNS="10.0.0.1"      }
-    # @{ Name="Kunde XY"; IP="172.16.0.100"; Mask="255.255.0.0"; GW="172.16.0.1"; DNS="172.16.0.1" },
 )
-# ============================================================
 
+$script:ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath "presets.json"
+
+function ConvertTo-PresetArray {
+    param([object[]]$Items)
+    $clean = @()
+    foreach ($item in $Items) {
+        if (-not $item) { continue }
+        if (-not $item.Name -or -not $item.IP -or -not $item.Mask) { continue }
+        $clean += @{
+            Name = [string]$item.Name
+            IP   = [string]$item.IP
+            Mask = [string]$item.Mask
+            GW   = [string]$item.GW
+            DNS  = [string]$item.DNS
+        }
+    }
+    return $clean
+}
+
+function Save-Presets {
+    param([object[]]$Presets)
+    $json = $Presets | ConvertTo-Json -Depth 3
+    Set-Content -Path $script:ConfigPath -Value $json -Encoding UTF8
+}
+
+function Load-Presets {
+    if (-not (Test-Path $script:ConfigPath)) {
+        Save-Presets $script:DefaultPresets
+        return $script:DefaultPresets
+    }
+
+    try {
+        $raw = Get-Content -Path $script:ConfigPath -Raw -Encoding UTF8
+        $fromFile = ConvertFrom-Json -InputObject $raw
+        $list = @($fromFile)
+        $presets = ConvertTo-PresetArray $list
+        if ($presets.Count -eq 0) {
+            Save-Presets $script:DefaultPresets
+            return $script:DefaultPresets
+        }
+        return $presets
+    } catch {
+        Save-Presets $script:DefaultPresets
+        return $script:DefaultPresets
+    }
+}
+
+$script:Presets = Load-Presets
+# ============================================================
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
     exit
@@ -290,6 +337,34 @@ function Set-IP {
           <!-- Preset-Liste (per Code befüllt) -->
           <StackPanel x:Name="ListPresets"/>
 
+          <Grid Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="8"/>
+              <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <Button x:Name="BtnPresetsBearbeiten" Grid.Column="0" Style="{StaticResource SBtnAction}" Margin="0">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock
+                    Text="&#xE8A5;" FontFamily="Segoe MDL2 Assets"
+                    FontSize="14" Foreground="#CBA6F7"
+                    VerticalAlignment="Center" Margin="0,0,10,0"/>
+                <TextBlock Text="Presets bearbeiten" FontSize="13" VerticalAlignment="Center"/>
+              </StackPanel>
+            </Button>
+
+            <Button x:Name="BtnPresetsNeuLaden" Grid.Column="2" Style="{StaticResource SBtnAction}" Margin="0">
+              <StackPanel Orientation="Horizontal">
+                <TextBlock
+                    Text="&#xE72C;" FontFamily="Segoe MDL2 Assets"
+                    FontSize="14" Foreground="#CBA6F7"
+                    VerticalAlignment="Center" Margin="0,0,10,0"/>
+                <TextBlock Text="Presets neu laden" FontSize="13" VerticalAlignment="Center"/>
+              </StackPanel>
+            </Button>
+          </Grid>
+
           <!-- Manuelle Eingabe Toggle -->
           <Button x:Name="BtnManuell" Style="{StaticResource SBtnAction}" Margin="0,8,0,0">
             <StackPanel Orientation="Horizontal">
@@ -387,6 +462,8 @@ $PanelManuell = $win.FindName("PanelManuell")
 $BtnDHCP      = $win.FindName("BtnDHCP")
 $BadgeDHCP    = $win.FindName("BadgeDHCP")
 $BtnManuell   = $win.FindName("BtnManuell")
+$BtnPresetsBearbeiten = $win.FindName("BtnPresetsBearbeiten")
+$BtnPresetsNeuLaden   = $win.FindName("BtnPresetsNeuLaden")
 $BtnZurueck   = $win.FindName("BtnZurueck")
 $BtnNetzwerk  = $win.FindName("BtnNetzwerk")
 $BtnApply     = $win.FindName("BtnApply")
@@ -597,6 +674,18 @@ $BtnApply.Add_Click({
     else                           { Show-Msg "[FEHLER]  $($result.Substring(4))" "err" }
     Refresh-StatusBar
     Build-PresetButtons
+})
+
+$BtnPresetsBearbeiten.Add_Click({
+    if (-not (Test-Path $script:ConfigPath)) { Save-Presets $script:Presets }
+    Start-Process notepad.exe $script:ConfigPath
+    Show-Msg "[INFO]  Presets in Notepad geoeffnet: $script:ConfigPath" "inf"
+})
+
+$BtnPresetsNeuLaden.Add_Click({
+    $script:Presets = Load-Presets
+    Build-PresetButtons
+    Show-Msg "[OK]  Presets neu geladen" "ok"
 })
 
 $BtnNetzwerk.Add_Click({
