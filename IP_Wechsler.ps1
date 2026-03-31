@@ -77,24 +77,59 @@ function Get-AdapterStatus {
     return @{ IP = $ip; DHCP = $dhcp }
 }
 
+
 function Set-IP {
     param($adapter, $mode, $ip="", $mask="", $gw="", $dns="")
+
     if (-not $adapter) { return "ERR:Kein Adapter ausgewaehlt" }
+
     try {
         if ($mode -eq "dhcp") {
-            netsh interface ip set address name="$adapter" source=dhcp 2>&1 | Out-Null
-            netsh interface ip set dns    name="$adapter" source=dhcp 2>&1 | Out-Null
-            return "OK:DHCP aktiviert auf '$adapter'"
-        } else {
-            if ($gw) {
-                netsh interface ip set address name="$adapter" static "$ip" "$mask" "$gw" 1 2>&1 | Out-Null
-            } else {
-                netsh interface ip set address name="$adapter" static "$ip" "$mask" 2>&1 | Out-Null
+            $out1 = netsh interface ip set address name="$adapter" source=dhcp 2>&1
+            $exit1 = $LASTEXITCODE
+
+            $out2 = netsh interface ip set dns name="$adapter" source=dhcp 2>&1
+            $exit2 = $LASTEXITCODE
+
+            if ($exit1 -ne 0) {
+                return "ERR:DHCP-IP konnte nicht gesetzt werden: $($out1 -join ' ')"
             }
-            if ($dns) { netsh interface ip set dns name="$adapter" static "$dns" 2>&1 | Out-Null }
+            if ($exit2 -ne 0) {
+                return "ERR:DHCP-DNS konnte nicht gesetzt werden: $($out2 -join ' ')"
+            }
+
+            return "OK:DHCP aktiviert auf '$adapter'"
+        }
+        else {
+            if (-not $ip -or -not $mask) {
+                return "ERR:IP und Maske sind Pflichtfelder"
+            }
+
+            if ($gw) {
+                $out1 = netsh interface ip set address name="$adapter" static "$ip" "$mask" "$gw" 1 2>&1
+            } else {
+                $out1 = netsh interface ip set address name="$adapter" static "$ip" "$mask" 2>&1
+            }
+            $exit1 = $LASTEXITCODE
+
+            if ($exit1 -ne 0) {
+                return "ERR:IP konnte nicht gesetzt werden: $($out1 -join ' ')"
+            }
+
+            if ($dns) {
+                $out2 = netsh interface ip set dns name="$adapter" static "$dns" 2>&1
+                $exit2 = $LASTEXITCODE
+
+                if ($exit2 -ne 0) {
+                    return "ERR:DNS konnte nicht gesetzt werden: $($out2 -join ' ')"
+                }
+            }
+
             return "OK:IP $ip gesetzt auf '$adapter'"
         }
-    } catch { return "ERR:$_" }
+    } catch {
+        return "ERR:$($_.Exception.Message)"
+    }
 }
 
 # ============================================================
@@ -725,37 +760,46 @@ $BtnApply.Add_Click({
 
 
 $BtnRouteAdd.Add_Click({
-    if (-not $script:SelectedAdapter) { Show-Msg "[FEHLER]  Kein Adapter ausgewaehlt!" "err"; return }
+    if (-not $script:SelectedAdapter) {
+        Show-Msg "[FEHLER]  Kein Adapter ausgewaehlt!" "err"
+        return
+    }
 
-    $dest = $InMailboxGW.Text.Trim()
-    $nh   = $InSPSIP.Text.Trim()
+    $gw   = $InMailboxGW.Text.Trim()   # Ziel-IP
+    $ip   = $InSPSIP.Text.Trim()       # Next Hop
+    $mask = "255.255.255.255"
 
     $ipObj = $null
-    if (-not [System.Net.IPAddress]::TryParse($dest, [ref]$ipObj)) { Show-Msg "[FEHLER]  Ungueltige Mailbox-Gateway IP: $dest" "err"; return }
-    if (-not [System.Net.IPAddress]::TryParse($nh,   [ref]$ipObj)) { Show-Msg "[FEHLER]  Ungueltige SPS IP: $nh" "err"; return }
+    if (-not [System.Net.IPAddress]::TryParse($gw, [ref]$ipObj)) {
+        Show-Msg "[FEHLER]  Ungueltige Ziel-IP: $gw" "err"
+        return
+    }
+
+    $ipObj = $null
+    if (-not [System.Net.IPAddress]::TryParse($ip, [ref]$ipObj)) {
+        Show-Msg "[FEHLER]  Ungueltige Next-Hop-IP: $ip" "err"
+        return
+    }
 
     try {
-        $na = Get-NetAdapter -Name $script:SelectedAdapter -ErrorAction Stop
-        $ifIndex = $na.ifIndex
-        if (-not $ifIndex) { $ifIndex = $na.InterfaceIndex }
+        # Vorhandene Route loeschen (Fehler ignorieren)
+        & route.exe DELETE $gw 2>$null | Out-Null
 
-        # Wenn vorhanden: alte Route entfernen (Fehler ignorieren)
-        Start-Process -FilePath route.exe -ArgumentList "DELETE $dest" -NoNewWindow -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
+        # Genau dieser Befehl wird erzeugt:
+        # route add <gw> MASK <mask> <ip>
+        $routeOut = & route.exe ADD $gw MASK $mask $ip 2>&1
+        $routeExit = $LASTEXITCODE
 
-        $p = Start-Process -FilePath route.exe `
-            -ArgumentList "ADD $dest MASK 255.255.255.255 $nh IF $ifIndex" `
-            -NoNewWindow -WindowStyle Hidden -PassThru -Wait
-
-        if ($p.ExitCode -eq 0) {
-            Show-Msg "[OK]  Route hinzugefuegt: $dest -> $nh (IF $ifIndex)" "ok"
+        if ($routeExit -eq 0) {
+            Show-Msg "[OK]  Route hinzugefuegt: route add $gw MASK $mask $ip" "ok"
         } else {
-            Show-Msg "[FEHLER]  route.exe ExitCode $($p.ExitCode). Befehl: route add $dest MASK 255.255.255.255 $nh IF $ifIndex" "err"
+            Show-Msg "[FEHLER]  Route konnte nicht hinzugefuegt werden: $($routeOut -join ' ')" "err"
         }
-    } catch {
+    }
+    catch {
         Show-Msg "[FEHLER]  Route konnte nicht gesetzt werden: $($_.Exception.Message)" "err"
     }
 })
-
 
 $BtnPresetsBearbeiten.Add_Click({
     if (-not (Test-Path $script:ConfigPath)) { Save-Presets $script:Presets }
